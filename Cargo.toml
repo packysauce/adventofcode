@@ -1,0 +1,14 @@
+[package]
+name = "adventofcode"
+version = "0.1.0"
+authors = ["Packy White <pwhite@lyft.com>"]
+edition = "2018"
+default-run = "adventofcode"
+
+[[bin]]
+name = "day1"
+path = "bin/day1.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
