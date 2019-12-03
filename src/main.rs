@@ -2,6 +2,8 @@ use failure::{format_err, Fallible};
 use std::fmt::{Result as FmtResult, Formatter, Display};
 use std::fs::read;
 use std::io::{BufRead, BufReader, Cursor};
+use rayon::prelude::*;
+use std::sync::mpsc::channel;
 
 trait Instruction {
     fn execute(self, cpu: &mut IntcodeMachine);
@@ -139,11 +141,30 @@ fn main() {
             }
         }
     }
-    let mut machine = IntcodeMachine::new(&data);
-    machine.set_cell(1, 12);
-    machine.set_cell(2, 2);
-    machine.run();
-    dbg!(machine.value_at(0));
+
+    let mut pairs: Vec<(i32, i32)> = Vec::new();
+    for i in 0..=99 {
+        for j in 0..=99 {
+            pairs.push((i, j));
+        }
+    }
+    let result: Option<(i32, i32)> = pairs.par_iter().find_map_any(|(verb, noun)| {
+        let mut machine = IntcodeMachine::new(&data);
+        machine.set_cell(1, *verb);
+        machine.set_cell(2, *noun);
+        machine.run();
+        if 19690720 == machine.value_at(0) {
+            Some((*verb, *noun))
+        } else { 
+            None
+        }
+    });
+
+    if let Some((verb, noun)) = result {
+        println!("verb {}, noun {}, code: {}", verb, noun, 100*verb+noun);
+    } else {
+        println!("you gotta be fuckin kidding me");
+    }
 }
 
 #[cfg(test)]
