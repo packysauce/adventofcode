@@ -9,6 +9,14 @@ default-run = "adventofcode"
 name = "day1"
 path = "bin/day1.rs"
 
+[[bin]]
+name = "day2"
+path = "bin/day2.rs"
+
+[[bin]]
+name = "day3"
+path = "bin/day3.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
