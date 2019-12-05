@@ -1,9 +1,7 @@
 use failure::{format_err, Fallible};
-use std::fmt::{Result as FmtResult, Formatter, Display};
-use std::fs::read;
-use std::io::{BufRead, BufReader, Cursor};
 use rayon::prelude::*;
-use std::sync::mpsc::channel;
+use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::io::{BufRead, BufReader, Cursor};
 
 trait Instruction {
     fn execute(self, cpu: &mut IntcodeMachine);
@@ -13,6 +11,7 @@ trait Instruction {
 enum MachineError {
     Halted,
     OutOfBounds(usize, usize),
+    InvalidOpcode(i32),
 }
 
 impl Display for MachineError {
@@ -42,8 +41,11 @@ impl<'a> IntcodeMachine {
         self.data[pos] = val;
     }
 
-    fn value_at(&self, pos: usize) -> i32 {
-        self.data[pos]
+    fn value_at(&self, pos: &Parameter) -> i32 {
+        match *pos {
+            Parameter::Indirect(x) => self.data[x],
+            Parameter::Immediate(x) => x,
+        }
     }
 
     fn as_ref(&'a self) -> &'a [i32] {
@@ -58,66 +60,118 @@ impl<'a> IntcodeMachine {
         self.halted = true
     }
 
-    fn read_op(&mut self) -> Fallible<Opcode> {
+    fn unpack_op(&mut self) -> Fallible<Opcode> {
         if self.halted {
-            return Err(MachineError::Halted.into())
+            return Err(MachineError::Halted.into());
         }
         if self.ip >= self.data.len() {
-            return Err(MachineError::OutOfBounds(self.ip, self.data.len()).into())
+            return Err(MachineError::OutOfBounds(self.ip, self.data.len()).into());
         }
-        let ip = self.ip;
-        match self.data[self.ip] {
+        let op: i32 = self.data[self.ip];
+        let opcode = op % 100;
+        let flags = op / 100;
+        
+        let result = match opcode {
             1 => {
+                let ip = self.ip;
                 self.ip += 4;
                 Ok(Opcode::Add {
-                    x: self.data[ip + 1] as usize,
-                    y: self.data[ip + 2] as usize,
-                    dest: self.data[ip + 3] as usize,
+                    x: Parameter::of_kind_and_value(flags / 10, self.data[ip + 1])?,
+                    y: Parameter::of_kind_and_value(flags / 100, self.data[ip + 2])?,
+                    dest: Parameter::of_kind_and_value(flags / 1000, self.data[ip + 3])?,
                 })
-            }
+            },
             2 => {
+                let ip = self.ip;
                 self.ip += 4;
                 Ok(Opcode::Mul {
-                    x: self.data[ip + 1] as usize,
-                    y: self.data[ip + 2] as usize,
-                    dest: self.data[ip + 3] as usize,
+                    x: Parameter::of_kind_and_value(flags / 10, self.data[ip + 1])?,
+                    y: Parameter::of_kind_and_value(flags / 100, self.data[ip + 2])?,
+                    dest: Parameter::of_kind_and_value(flags / 1000, self.data[ip + 3])?,
                 })
-            }
+            },
             99 => Ok(Opcode::Halt),
-            _ => Err(format_err!("Bad opcode {}", &self.data[self.ip])),
-        }
+            _ => Err(MachineError::InvalidOpcode(99).into()),
+        };
+
+        result
     }
 
     fn run(&mut self) {
-        while let Ok(opcode) = self.read_op() {
+        while let Ok(opcode) = self.unpack_op() {
             opcode.execute(self);
         }
     }
 }
 
 #[derive(Debug, PartialEq)]
+enum Parameter {
+    Immediate(i32),
+    Indirect(usize),
+}
+
+impl Parameter {
+    fn of_kind_and_value(kind: i32, value: i32) -> Fallible<Parameter> {
+        match kind {
+            0 => Ok(Parameter::Indirect(value as usize)),
+            1 => Ok(Parameter::Immediate(value)),
+            _ => Err(MachineError::InvalidOpcode(kind).into()),
+        }
+    }
+
+    fn from_cpu(&self, cpu: &IntcodeMachine) -> i32 {
+        match *self {
+            Parameter::Immediate(x) => x as i32,
+            _ => cpu.value_at(&self),
+        }
+    }
+}
+
+impl Display for Parameter {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
+        match self {
+            Parameter::Immediate(x) => write!(f, "{}", x),
+            Parameter::Indirect(x) => write!(f, "({})", x),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
 enum Opcode {
-    Add { x: usize, y: usize, dest: usize },
-    Mul { x: usize, y: usize, dest: usize },
+    Add {
+        x: Parameter,
+        y: Parameter,
+        dest: Parameter,
+    },
+    Mul {
+        x: Parameter,
+        y: Parameter,
+        dest: Parameter,
+    },
     Halt,
 }
 
 impl Display for Opcode {
     fn fmt(&self, w: &mut Formatter) -> FmtResult {
         match self {
-            Opcode::Add {x, y, dest} => write!(w, "add %{} + %{} => %{}", x, y, dest),
-            Opcode::Mul {x, y, dest} => write!(w, "mul %{} * %{} => %{}", x, y, dest),
+            Opcode::Add { x, y, dest } => write!(w, "add %{} + %{} => %{}", x, y, dest),
+            Opcode::Mul { x, y, dest } => write!(w, "mul %{} * %{} => %{}", x, y, dest),
             Opcode::Halt => write!(w, "halt"),
         }
     }
 }
 
-
 impl Instruction for Opcode {
     fn execute(self, cpu: &mut IntcodeMachine) {
         match self {
-            Opcode::Add { x, y, dest } => cpu.set_cell(dest, cpu.value_at(x) + cpu.value_at(y)),
-            Opcode::Mul { x, y, dest } => cpu.set_cell(dest, cpu.value_at(x) * cpu.value_at(y)),
+            Opcode::Add { x, y, dest } => cpu.set_cell(
+                dest.from_cpu(&cpu) as usize,
+                cpu.value_at(&x) + cpu.value_at(&y),
+            ),
+            Opcode::Mul { x, y, dest } => cpu.set_cell(
+                dest.from_cpu(&cpu) as usize,
+                cpu.value_at(&x) * cpu.value_at(&y),
+            ),
             Opcode::Halt => cpu.halt(),
         }
     }
@@ -153,15 +207,15 @@ fn main() {
         machine.set_cell(1, *verb);
         machine.set_cell(2, *noun);
         machine.run();
-        if 19690720 == machine.value_at(0) {
+        if 19690720 == machine.value_at(&Parameter::Indirect(0)) {
             Some((*verb, *noun))
-        } else { 
+        } else {
             None
         }
     });
 
     if let Some((verb, noun)) = result {
-        println!("verb {}, noun {}, code: {}", verb, noun, 100*verb+noun);
+        println!("verb {}, noun {}, code: {}", verb, noun, 100 * verb + noun);
     } else {
         println!("you gotta be fuckin kidding me");
     }
@@ -175,28 +229,28 @@ mod tests {
     fn test_read_single_add() {
         let data = &[1, 0, 0, 0, 99];
         let mut machine = IntcodeMachine::new(data);
-        let result = machine.read_op().unwrap();
+        let result = machine.unpack_op().unwrap();
         let expected = Opcode::Add {
-            x: 0,
-            y: 0,
-            dest: 0,
+            x: Parameter::Indirect(0),
+            y: Parameter::Indirect(0),
+            dest: Parameter::Indirect(0),
         };
         assert_eq!(result, expected);
-        assert_eq!(machine.read_op().unwrap(), Opcode::Halt);
+        assert_eq!(machine.unpack_op().unwrap(), Opcode::Halt);
     }
 
     #[test]
     fn test_read_single_mul() {
         let data = &[2, 0, 0, 0, 99];
         let mut machine = IntcodeMachine::new(data);
-        let result = machine.read_op().unwrap();
+        let result = machine.unpack_op().unwrap();
         let expected = Opcode::Mul {
-            x: 0,
-            y: 0,
-            dest: 0,
+            x: Parameter::Indirect(0),
+            y: Parameter::Indirect(0),
+            dest: Parameter::Indirect(0),
         };
         assert_eq!(result, expected);
-        assert_eq!(machine.read_op().unwrap(), Opcode::Halt);
+        assert_eq!(machine.unpack_op().unwrap(), Opcode::Halt);
     }
 
     #[test]
@@ -204,7 +258,7 @@ mod tests {
         let data = &[1, 5, 2, 3, 99, 0];
         let mut machine = IntcodeMachine::new(data);
         machine.run();
-        assert_eq!(machine.value_at(3), 2);
+        assert_eq!(machine.value_at(&Parameter::Indirect(3)), 2);
     }
 
     #[test]
@@ -212,6 +266,6 @@ mod tests {
         let data = &[2, 0, 0, 3, 99];
         let mut machine = IntcodeMachine::new(data);
         machine.run();
-        assert_eq!(machine.value_at(3), 4);
+        assert_eq!(machine.value_at(&Parameter::Indirect(3)), 4);
     }
 }
