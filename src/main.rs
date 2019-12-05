@@ -1,66 +1,170 @@
+use failure::{format_err, Fallible};
+use std::fmt::{Result as FmtResult, Formatter, Display};
+use std::fs::read;
+use std::io::{BufRead, BufReader, Cursor};
 use rayon::prelude::*;
-use std::collections::{hash_map::Entry, HashMap};
+use std::sync::mpsc::channel;
 
-fn char_count(x: &str) -> HashMap<char, usize> {
-    let chars: Vec<char> = x.chars().collect();
-    // check for dupes
-    let mut counts: HashMap<char, usize> = HashMap::new();
-    for c in chars.iter() {
-      if let Entry::Occupied(mut count) = counts.entry(*c) {
-        *count.get_mut() += 1;
-      } else {
-        counts.insert(*c, 1);
-      }
+trait Instruction {
+    fn execute(self, cpu: &mut IntcodeMachine);
+}
+
+#[derive(Debug)]
+enum MachineError {
+    Halted,
+    OutOfBounds(usize, usize),
+}
+
+impl Display for MachineError {
+    fn fmt(&self, w: &mut Formatter) -> FmtResult {
+        write!(w, "{:?}", self)
     }
-    counts
 }
 
-fn has_dupes(x: &str) -> bool {
-    let char_count = char_count(x);
-    char_count.values().any(|x| *x == 2)
+impl std::error::Error for MachineError {}
+
+struct IntcodeMachine {
+    ip: usize,
+    halted: bool,
+    data: Vec<i32>,
 }
 
-fn only_increases(x: &str) -> bool {
-    let mut last: u32 = x.chars().take(1).collect::<String>().parse().unwrap();
-    for i in x.chars().flat_map(|s| char::to_digit(s, 10)) {
-        if i < last {
-            return false;
+impl<'a> IntcodeMachine {
+    fn new(data: &[i32]) -> IntcodeMachine {
+        IntcodeMachine {
+            ip: 0,
+            halted: false,
+            data: data.to_vec(),
         }
-        last = i;
     }
-    true
+
+    fn set_cell(&mut self, pos: usize, val: i32) {
+        self.data[pos] = val;
+    }
+
+    fn value_at(&self, pos: usize) -> i32 {
+        self.data[pos]
+    }
+
+    fn as_ref(&'a self) -> &'a [i32] {
+        self.data.as_ref()
+    }
+
+    fn set_ip(&mut self, pos: usize) {
+        self.ip = pos
+    }
+
+    fn halt(&mut self) {
+        self.halted = true
+    }
+
+    fn read_op(&mut self) -> Fallible<Opcode> {
+        if self.halted {
+            return Err(MachineError::Halted.into())
+        }
+        if self.ip >= self.data.len() {
+            return Err(MachineError::OutOfBounds(self.ip, self.data.len()).into())
+        }
+        let ip = self.ip;
+        match self.data[self.ip] {
+            1 => {
+                self.ip += 4;
+                Ok(Opcode::Add {
+                    x: self.data[ip + 1] as usize,
+                    y: self.data[ip + 2] as usize,
+                    dest: self.data[ip + 3] as usize,
+                })
+            }
+            2 => {
+                self.ip += 4;
+                Ok(Opcode::Mul {
+                    x: self.data[ip + 1] as usize,
+                    y: self.data[ip + 2] as usize,
+                    dest: self.data[ip + 3] as usize,
+                })
+            }
+            99 => Ok(Opcode::Halt),
+            _ => Err(format_err!("Bad opcode {}", &self.data[self.ip])),
+        }
+    }
+
+    fn run(&mut self) {
+        while let Ok(opcode) = self.read_op() {
+            opcode.execute(self);
+        }
+    }
 }
 
-fn is_password(x: &str) -> Option<u32> {
-    if has_dupes(x) && only_increases(x) && x.len() == 6 {
-        x.parse().ok()
-    } else {
-        None
+#[derive(Debug, PartialEq)]
+enum Opcode {
+    Add { x: usize, y: usize, dest: usize },
+    Mul { x: usize, y: usize, dest: usize },
+    Halt,
+}
+
+impl Display for Opcode {
+    fn fmt(&self, w: &mut Formatter) -> FmtResult {
+        match self {
+            Opcode::Add {x, y, dest} => write!(w, "add %{} + %{} => %{}", x, y, dest),
+            Opcode::Mul {x, y, dest} => write!(w, "mul %{} * %{} => %{}", x, y, dest),
+            Opcode::Halt => write!(w, "halt"),
+        }
+    }
+}
+
+
+impl Instruction for Opcode {
+    fn execute(self, cpu: &mut IntcodeMachine) {
+        match self {
+            Opcode::Add { x, y, dest } => cpu.set_cell(dest, cpu.value_at(x) + cpu.value_at(y)),
+            Opcode::Mul { x, y, dest } => cpu.set_cell(dest, cpu.value_at(x) * cpu.value_at(y)),
+            Opcode::Halt => cpu.halt(),
+        }
     }
 }
 
 fn main() {
-    let mut args = std::env::args();
-    args.next().expect("seriously?");
-    let start: u32 = args
-        .next()
-        .expect("No range start provided")
-        .parse()
-        .expect("Start wasn't a number");
-    let end: u32 = args
-        .next()
-        .expect("No range end provided")
-        .parse()
-        .expect("End wasn't a number");
+    let fname: String = std::env::args().skip(1).take(1).collect();
+    let input_data = std::fs::read(fname)
+        .map(Cursor::new)
+        .map(BufReader::new)
+        .expect("couldnt read the file");
 
-    let passwords: Vec<u32> = (start..=end)
-        .map(|s| s.to_string())
-        .collect::<Vec<String>>()
-        .par_iter()
-        .filter_map(|s| is_password(&s))
-        .collect();
+    let mut data: Vec<i32> = Vec::new();
 
-    println!("# passwords: {}", passwords.len());
+    for line in input_data.lines() {
+        for chunk in line.unwrap().split(',') {
+            if let Ok(parsed) = chunk.parse() {
+                data.push(parsed)
+            } else {
+                eprintln!("dropping chunk {}", chunk);
+            }
+        }
+    }
+
+    let mut pairs: Vec<(i32, i32)> = Vec::new();
+    for i in 0..=99 {
+        for j in 0..=99 {
+            pairs.push((i, j));
+        }
+    }
+    let result: Option<(i32, i32)> = pairs.par_iter().find_map_any(|(verb, noun)| {
+        let mut machine = IntcodeMachine::new(&data);
+        machine.set_cell(1, *verb);
+        machine.set_cell(2, *noun);
+        machine.run();
+        if 19690720 == machine.value_at(0) {
+            Some((*verb, *noun))
+        } else { 
+            None
+        }
+    });
+
+    if let Some((verb, noun)) = result {
+        println!("verb {}, noun {}, code: {}", verb, noun, 100*verb+noun);
+    } else {
+        println!("you gotta be fuckin kidding me");
+    }
 }
 
 #[cfg(test)]
@@ -68,26 +172,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_dupe_check() {
-        assert!(has_dupes("113456"));
-        assert!(has_dupes("122456"));
-        assert!(has_dupes("123446"));
-        assert!(has_dupes("123455"));
-        assert!(!has_dupes("123456"));
+    fn test_read_single_add() {
+        let data = &[1, 0, 0, 0, 99];
+        let mut machine = IntcodeMachine::new(data);
+        let result = machine.read_op().unwrap();
+        let expected = Opcode::Add {
+            x: 0,
+            y: 0,
+            dest: 0,
+        };
+        assert_eq!(result, expected);
+        assert_eq!(machine.read_op().unwrap(), Opcode::Halt);
     }
 
     #[test]
-    fn test_only_increases() {
-        assert!(only_increases("123456"));
-        assert!(only_increases("123444"));
-        assert!(only_increases("111111"));
-        assert!(!only_increases("654321"));
+    fn test_read_single_mul() {
+        let data = &[2, 0, 0, 0, 99];
+        let mut machine = IntcodeMachine::new(data);
+        let result = machine.read_op().unwrap();
+        let expected = Opcode::Mul {
+            x: 0,
+            y: 0,
+            dest: 0,
+        };
+        assert_eq!(result, expected);
+        assert_eq!(machine.read_op().unwrap(), Opcode::Halt);
     }
 
     #[test]
-    fn test_char_count() {
-      let result = char_count("111144");
-      assert_eq!(*result.get(&'1').unwrap(), 4);
-      assert_eq!(*result.get(&'4').unwrap(), 2);
+    fn test_single_add() {
+        let data = &[1, 5, 2, 3, 99, 0];
+        let mut machine = IntcodeMachine::new(data);
+        machine.run();
+        assert_eq!(machine.value_at(3), 2);
+    }
+
+    #[test]
+    fn test_single_mul() {
+        let data = &[2, 0, 0, 3, 99];
+        let mut machine = IntcodeMachine::new(data);
+        machine.run();
+        assert_eq!(machine.value_at(3), 4);
     }
 }
