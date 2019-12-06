@@ -58,7 +58,7 @@ impl Input for io::Stdin {
         let mut buf = BufReader::new(self);
         let mut s = String::new();
         buf.read_line(&mut s)?;
-        Ok(s.parse()?)
+        Ok(s.trim().parse()?)
     }
 }
 
@@ -504,5 +504,88 @@ mod tests {
         println!("{:?}", &machine.data.clone());
         let mut output = machine.take_output().unwrap();
         assert_eq!(output.results(), Some(vec![99]));
+    }
+
+    #[test]
+    fn test_jmp_if_false() {
+        let ins: Box<Vec<i32>> = Box::new(Vec::new());
+        let outs: Box<Vec<i32>> = Box::new(Vec::new());
+        let data = vec![
+            106, 0, 6,    // jump to 6 if 0 is true
+            104, 69, 99,  // trap! 69 is bad number
+            104, 420, 99  // print imm(420)
+        ];
+        let mut machine = IntcodeMachine::new(&data, ins, outs);
+        machine.run().unwrap();
+        println!("{:?}", &machine.data.clone());
+        let mut output = machine.take_output().unwrap();
+        assert_eq!(output.results(), Some(vec![420]));
+    }
+
+    #[test]
+    fn test_jmp_if_true() {
+        let ins: Box<Vec<i32>> = Box::new(Vec::new());
+        let outs: Box<Vec<i32>> = Box::new(Vec::new());
+        let data = vec![
+            105, 0, 6,    // jump to 6 if 0 is true
+            104, 69, 99,  // trap! 69 is bad number
+            104, 420, 99  // print imm(420)
+        ];
+        let mut machine = IntcodeMachine::new(&data, ins, outs);
+        machine.run().unwrap();
+        let mut output = machine.take_output().unwrap();
+        assert_eq!(output.results(), Some(vec![69]));
+    }
+
+    #[test]
+    fn test_equal() {
+        for (i, expected) in vec![(7, 0), (8, 1), (9, 0)] {
+            let ins: Box<Vec<i32>> = Box::new(vec![i]);
+            let outs: Box<Vec<i32>> = Box::new(Vec::new());
+            let data = vec![3,9,8,9,10,9,4,9,99,-1,8];
+            let mut machine = IntcodeMachine::new(&data, ins, outs);
+            machine.run().unwrap();
+            let mut output = machine.take_output().unwrap();
+            assert_eq!(output.results(), Some(vec![expected]));
+        }
+    }
+
+    #[test]
+    fn test_equal_imm() {
+        for (i, expected) in vec![(7, 0), (8, 1), (9, 0)] {
+            let ins: Box<Vec<i32>> = Box::new(vec![i]);
+            let outs: Box<Vec<i32>> = Box::new(Vec::new());
+            let data = vec![3,3,1108,-1,8,3,4,3,99];
+            let mut machine = IntcodeMachine::new(&data, ins, outs);
+            machine.run().unwrap();
+            let mut output = machine.take_output().unwrap();
+            assert_eq!(output.results(), Some(vec![expected]));
+        }
+    }
+
+    #[test]
+    fn test_less() {
+        for (i, expected) in vec![(7, 1), (8, 0), (9, 0)] {
+            let ins: Box<Vec<i32>> = Box::new(vec![i]);
+            let outs: Box<Vec<i32>> = Box::new(Vec::new());
+            let data = vec![3,9,7,9,10,9,4,9,99,-1,8];
+            let mut machine = IntcodeMachine::new(&data, ins, outs);
+            machine.run().unwrap();
+            let mut output = machine.take_output().unwrap();
+            assert_eq!(output.results(), Some(vec![expected]));
+        }
+    }
+
+    #[test]
+    fn test_less_imm() {
+        for (i, expected) in vec![(7, 1), (8, 0), (9, 0)] {
+            let ins: Box<Vec<i32>> = Box::new(vec![i]);
+            let outs: Box<Vec<i32>> = Box::new(Vec::new());
+            let data = vec![3,3,1107,-1,8,3,4,3,99];
+            let mut machine = IntcodeMachine::new(&data, ins, outs);
+            machine.run().unwrap();
+            let mut output = machine.take_output().unwrap();
+            assert_eq!(output.results(), Some(vec![expected]));
+        }
     }
 }
