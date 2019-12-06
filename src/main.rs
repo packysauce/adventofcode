@@ -1,11 +1,15 @@
 use failure::{format_err, Fallible, ResultExt};
 use std::fmt::{Display, Formatter, Result as FmtResult};
-use std::io::{BufRead, BufReader, Cursor, self};
+use std::io::{BufRead, BufReader, Cursor, self, Write};
+use lazy_static::lazy_static;
 
-const DEBUG: bool = true;
+lazy_static! {
+    static ref DEBUG: bool = { std::env::var("DEBUG").is_ok() };
+}
 
 trait Output {
     fn output(&mut self, what: i32) -> Fallible<()>;
+    fn results(&mut self) -> Option<Vec<i32>>;
 }
 
 trait Input {
@@ -16,13 +20,28 @@ trait Instruction {
     fn execute(self, cpu: &mut IntcodeMachine) -> Fallible<()>;
 }
 
-struct MockIO {
+struct MockInput {
     current_input: usize,
     inputs: Vec<i32>,
-    outputs: Vec<i32>,
 }
 
-impl Input for MockIO {
+impl Input for Vec<i32> {
+    fn input(&mut self) -> Fallible<i32> {
+        self.pop().ok_or(MachineError::EOF.into())
+    }
+}
+
+impl Output for Vec<i32> {
+    fn output(&mut self, what: i32) -> Fallible<()> {
+        Ok(self.push(what))
+    }
+
+    fn results(&mut self) -> Option<Vec<i32>> {
+        Some(self.clone())
+    }
+}
+
+impl Input for MockInput {
     fn input(&mut self) -> Fallible<i32> {
         if let Some(x) = self.inputs.get(self.current_input) {
             let result = Ok(*x);
@@ -34,15 +53,7 @@ impl Input for MockIO {
     }
 }
 
-impl Output for MockIO {
-    fn output(&mut self, what: i32) -> Fallible<()> {
-        self.outputs.push(what);
-        Ok(())
-    }
-
-}
-
-impl Input for dyn std::io::Read {
+impl Input for io::Stdin {
     fn input(&mut self) -> Fallible<i32> {
         let mut buf = BufReader::new(self);
         let mut s = String::new();
@@ -51,9 +62,13 @@ impl Input for dyn std::io::Read {
     }
 }
 
-impl Output for dyn std::io::Write {
+impl Output for io::Stdout {
     fn output(&mut self, what: i32) -> Fallible<()> {
         Ok(write!(self, "{}", what)?)
+    }
+
+    fn results(&mut self) -> Option<Vec<i32>> {
+        None
     }
 }
 
@@ -79,19 +94,27 @@ struct IntcodeMachine {
     ip: usize,
     halted: bool,
     data: Vec<i32>,
+    input: Box<dyn Input>,
+    output: Option<Box<dyn Output>>,
 }
 
 impl<'a> IntcodeMachine {
-    fn new(data: &[i32]) -> IntcodeMachine {
+    fn new(data: &[i32], input: Box<dyn Input>, output: Box<dyn Output>) -> IntcodeMachine {
         IntcodeMachine {
             ip: 0,
             halted: false,
             data: data.to_vec(),
+            input,
+            output: Some(output),
         }
     }
 
+    fn take_output(mut self) -> Option<Box<dyn Output>> {
+        self.output.take()
+    }
+
     fn set_cell(&mut self, pos: usize, val: i32) -> Fallible<()> {
-        if DEBUG {
+        if *DEBUG {
             println!("self.data[{}] <- {} (was: {})", pos, val, self.data[pos]);
         }
         if pos > self.data.len() {
@@ -104,18 +127,29 @@ impl<'a> IntcodeMachine {
     fn value_at(&self, pos: &Parameter) -> i32 {
         match *pos {
             Parameter::Indirect(x) => {
-                if DEBUG {
+                if *DEBUG {
                     println!("self.data[{}] = {}", x, self.data[x]);
                 }
                 self.data[x]
             },
             Parameter::Immediate(x) => {
-                if DEBUG {
+                if *DEBUG {
                     println!("immediate: {}", x);
                 }
                 x
             },
         }
+    }
+
+    fn input(&mut self) -> Fallible<i32> {
+        self.input.input()
+    }
+    
+    fn output(&mut self, what: i32) -> Fallible<()> {
+        if let Some(output) = self.output.as_mut() {
+            output.output(what)?
+        }
+        Ok(())
     }
 
     fn as_ref(&'a self) -> &'a [i32] {
@@ -126,7 +160,7 @@ impl<'a> IntcodeMachine {
         if pos > self.data.len() {
             Err(MachineError::OutOfBounds(pos, self.data.len()).into())
         } else {
-            if DEBUG {
+            if *DEBUG {
                 println!("cpu.ip <= {} (was {})", pos, self.ip);
             }
             self.ip = pos;
@@ -148,7 +182,7 @@ impl<'a> IntcodeMachine {
         let op: i32 = self.data[self.ip];
         let opcode = op % 100;
         let flags = op / 100;
-        if DEBUG {
+        if *DEBUG {
             println!("opcode: {}, flags: {}", opcode, flags);
         }
         
@@ -229,7 +263,7 @@ impl<'a> IntcodeMachine {
     fn run(&mut self) -> Fallible<()> {
         loop {
             let op = self.unpack_op()?;
-            if DEBUG {
+            if *DEBUG {
                 println!("{:?}", op);
             }
             match op {
@@ -346,13 +380,11 @@ impl Instruction for Opcode {
                 cpu.value_at(&x) * cpu.value_at(&y),
             )?,
             Opcode::Input { x} => {
-                let mut s = String::new();
-                io::stdin().read_line(&mut s)?;
-                let value: i32 = s.trim().parse::<i32>().context("parsing input")?;
+                let value = cpu.input()?;
                 cpu.set_cell(x, value)?;
             },
             Opcode::Output {x} => {
-                println!("{}", cpu.value_at(&x));
+                cpu.output(cpu.value_at(&x))?;
             },
             Opcode::JumpIfTrue {x, dest} => {
                 if cpu.value_at(&x) != 0 {
@@ -403,7 +435,9 @@ fn main() {
         }
     }
 
-    let mut machine = IntcodeMachine::new(&data);
+    let input = Box::new(io::stdin());
+    let output = Box::new(io::stdout());
+    let mut machine = IntcodeMachine::new(&data, input, output);
     if let Err(e) = machine.run() {
         eprintln!("{:?}", &e);
         for i in e.iter_causes() {
@@ -419,7 +453,7 @@ mod tests {
     #[test]
     fn test_read_single_add() {
         let data = &[1, 0, 0, 0, 99];
-        let mut machine = IntcodeMachine::new(data);
+        let mut machine = IntcodeMachine::new(data, Box::new(Vec::new()), Box::new(Vec::new()));
         let result = machine.unpack_op().unwrap();
         let expected = Opcode::Add {
             x: Parameter::Indirect(0),
@@ -433,7 +467,7 @@ mod tests {
     #[test]
     fn test_read_single_mul() {
         let data = &[2, 0, 0, 0, 99];
-        let mut machine = IntcodeMachine::new(data);
+        let mut machine = IntcodeMachine::new(data, Box::new(Vec::new()), Box::new(Vec::new()));
         let result = machine.unpack_op().unwrap();
         let expected = Opcode::Mul {
             x: Parameter::Indirect(0),
@@ -447,7 +481,7 @@ mod tests {
     #[test]
     fn test_single_add() {
         let data = &[1, 5, 2, 3, 99, 0];
-        let mut machine = IntcodeMachine::new(data);
+        let mut machine = IntcodeMachine::new(data, Box::new(Vec::new()), Box::new(Vec::new()));
         machine.run().unwrap();
         assert_eq!(machine.value_at(&Parameter::Indirect(3)), 2);
     }
@@ -455,8 +489,20 @@ mod tests {
     #[test]
     fn test_single_mul() {
         let data = &[2, 0, 0, 3, 99];
-        let mut machine = IntcodeMachine::new(data);
+        let mut machine = IntcodeMachine::new(data, Box::new(Vec::new()), Box::new(Vec::new()));
         machine.run().unwrap();
         assert_eq!(machine.value_at(&Parameter::Indirect(3)), 4);
+    }
+
+    #[test]
+    fn test_io() {
+        let ins: Box<Vec<i32>> = Box::new(vec![99]);
+        let outs: Box<Vec<i32>> = Box::new(Vec::new());
+        let data = vec![3, 3, 104, 0, 99];
+        let mut machine = IntcodeMachine::new(&data, ins, outs);
+        machine.run().unwrap();
+        println!("{:?}", &machine.data.clone());
+        let mut output = machine.take_output().unwrap();
+        assert_eq!(output.results(), Some(vec![99]));
     }
 }
