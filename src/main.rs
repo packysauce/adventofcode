@@ -4,8 +4,57 @@ use std::io::{BufRead, BufReader, Cursor, self};
 
 const DEBUG: bool = true;
 
+trait Output {
+    fn output(&mut self, what: i32) -> Fallible<()>;
+}
+
+trait Input {
+    fn input(&mut self) -> Fallible<i32>;
+}
+
 trait Instruction {
     fn execute(self, cpu: &mut IntcodeMachine) -> Fallible<()>;
+}
+
+struct MockIO {
+    current_input: usize,
+    inputs: Vec<i32>,
+    outputs: Vec<i32>,
+}
+
+impl Input for MockIO {
+    fn input(&mut self) -> Fallible<i32> {
+        if let Some(x) = self.inputs.get(self.current_input) {
+            let result = Ok(*x);
+            self.current_input += 1;
+            result
+        } else {
+            Err(MachineError::EOF.into())
+        }
+    }
+}
+
+impl Output for MockIO {
+    fn output(&mut self, what: i32) -> Fallible<()> {
+        self.outputs.push(what);
+        Ok(())
+    }
+
+}
+
+impl Input for dyn std::io::Read {
+    fn input(&mut self) -> Fallible<i32> {
+        let mut buf = BufReader::new(self);
+        let mut s = String::new();
+        buf.read_line(&mut s)?;
+        Ok(s.parse()?)
+    }
+}
+
+impl Output for dyn std::io::Write {
+    fn output(&mut self, what: i32) -> Fallible<()> {
+        Ok(write!(self, "{}", what)?)
+    }
 }
 
 #[derive(Debug)]
@@ -13,6 +62,7 @@ enum MachineError {
     Halted,
     OutOfBounds(usize, usize),
     InvalidOpcode(i32),
+    EOF,
     InvalidIndirect,
     InvalidImmediate,
 }
