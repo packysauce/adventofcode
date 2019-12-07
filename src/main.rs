@@ -1,7 +1,7 @@
 use failure::{format_err, Fallible, ResultExt};
-use std::fmt::{Display, Formatter, Result as FmtResult};
-use std::io::{BufRead, BufReader, Cursor, self, Write};
 use lazy_static::lazy_static;
+use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::io::{self, BufRead, BufReader, Cursor, Write};
 
 lazy_static! {
     static ref DEBUG: bool = { std::env::var("DEBUG").is_ok() };
@@ -64,7 +64,7 @@ impl Input for io::Stdin {
 
 impl Output for io::Stdout {
     fn output(&mut self, what: i32) -> Fallible<()> {
-        Ok(write!(self, "{}", what)?)
+        Ok(writeln!(self, "{}", what)?)
     }
 
     fn results(&mut self) -> Option<Vec<i32>> {
@@ -118,7 +118,7 @@ impl<'a> IntcodeMachine {
             println!("self.data[{}] <- {} (was: {})", pos, val, self.data[pos]);
         }
         if pos > self.data.len() {
-            return Err(MachineError::OutOfBounds(pos, self.data.len()).into())
+            return Err(MachineError::OutOfBounds(pos, self.data.len()).into());
         }
         self.data[pos] = val;
         Ok(())
@@ -131,20 +131,20 @@ impl<'a> IntcodeMachine {
                     println!("self.data[{}] = {}", x, self.data[x]);
                 }
                 self.data[x]
-            },
+            }
             Parameter::Immediate(x) => {
                 if *DEBUG {
                     println!("immediate: {}", x);
                 }
                 x
-            },
+            }
         }
     }
 
     fn input(&mut self) -> Fallible<i32> {
         self.input.input()
     }
-    
+
     fn output(&mut self, what: i32) -> Fallible<()> {
         if let Some(output) = self.output.as_mut() {
             output.output(what)?
@@ -185,7 +185,7 @@ impl<'a> IntcodeMachine {
         if *DEBUG {
             println!("opcode: {}, flags: {}", opcode, flags);
         }
-        
+
         let result = match opcode {
             1 => {
                 let ip = self.ip;
@@ -195,7 +195,7 @@ impl<'a> IntcodeMachine {
                     y: Parameter::of_kind_and_value(flags / 10, self.data[ip + 2])?,
                     dest: self.data[ip + 3] as usize,
                 })
-            },
+            }
             2 => {
                 let ip = self.ip;
                 self.ip += 4;
@@ -204,21 +204,21 @@ impl<'a> IntcodeMachine {
                     y: Parameter::of_kind_and_value(flags / 10, self.data[ip + 2])?,
                     dest: self.data[ip + 3] as usize,
                 })
-            },
+            }
             3 => {
                 let ip = self.ip;
                 self.ip += 2;
                 Ok(Opcode::Input {
                     x: self.data[ip + 1] as usize,
                 })
-            },
+            }
             4 => {
                 let ip = self.ip;
                 self.ip += 2;
                 Ok(Opcode::Output {
                     x: Parameter::of_kind_and_value(flags % 10, self.data[ip + 1])?,
                 })
-            },
+            }
             5 => {
                 let ip = self.ip;
                 self.ip += 3;
@@ -226,7 +226,7 @@ impl<'a> IntcodeMachine {
                     x: Parameter::of_kind_and_value(flags % 10, self.data[ip + 1])?,
                     dest: self.data[ip + 2] as usize,
                 })
-            },
+            }
             6 => {
                 let ip = self.ip;
                 self.ip += 3;
@@ -234,7 +234,7 @@ impl<'a> IntcodeMachine {
                     x: Parameter::of_kind_and_value(flags % 10, self.data[ip + 1])?,
                     dest: self.data[ip + 2] as usize,
                 })
-            },
+            }
             7 => {
                 let ip = self.ip;
                 self.ip += 4;
@@ -243,7 +243,7 @@ impl<'a> IntcodeMachine {
                     y: Parameter::of_kind_and_value(flags / 10, self.data[ip + 2])?,
                     dest: self.data[ip + 3] as usize,
                 })
-            },
+            }
             8 => {
                 let ip = self.ip;
                 self.ip += 4;
@@ -252,9 +252,9 @@ impl<'a> IntcodeMachine {
                     y: Parameter::of_kind_and_value(flags / 10, self.data[ip + 2])?,
                     dest: self.data[ip + 3] as usize,
                 })
-            },
+            }
             99 => Ok(Opcode::Halt),
-            x => Err(MachineError::InvalidOpcode(x).into()),
+            _ => Err(MachineError::InvalidOpcode(opcode).into()),
         };
 
         result
@@ -350,6 +350,7 @@ enum Opcode {
         dest: usize,
     },
     Halt,
+    Noop,
 }
 
 impl Display for Opcode {
@@ -359,11 +360,12 @@ impl Display for Opcode {
             Opcode::Mul { x, y, dest } => write!(w, "mul {} * {} => {}", x, y, dest),
             Opcode::Input { x } => write!(w, "input -> {}", x),
             Opcode::Output { x } => write!(w, "{} -> output", x),
-            Opcode::JumpIfFalse { x, dest} => write!(w, "jmp-false {} -> {}", x, dest),
-            Opcode::JumpIfTrue { x, dest} => write!(w, "jmp-true {} -> {}", x, dest),
-            Opcode::LessThan { x, y, dest} => write!(w, "lessthan {} < {} => {}", x, y, dest),
-            Opcode::Equal { x, y, dest} => write!(w, "equal {} == {} => {}", x, y, dest),
+            Opcode::JumpIfFalse { x, dest } => write!(w, "jmp-false {} -> {}", x, dest),
+            Opcode::JumpIfTrue { x, dest } => write!(w, "jmp-true {} -> {}", x, dest),
+            Opcode::LessThan { x, y, dest } => write!(w, "lessthan {} < {} => {}", x, y, dest),
+            Opcode::Equal { x, y, dest } => write!(w, "equal {} == {} => {}", x, y, dest),
             Opcode::Halt => write!(w, "halt"),
+            Opcode::Noop => write!(w, "noop"),
         }
     }
 }
@@ -371,46 +373,45 @@ impl Display for Opcode {
 impl Instruction for Opcode {
     fn execute(self, cpu: &mut IntcodeMachine) -> Fallible<()> {
         match self {
-            Opcode::Add { x, y, dest } => cpu.set_cell(
-                dest,
-                cpu.value_at(&x) + cpu.value_at(&y),
-            )?,
-            Opcode::Mul { x, y, dest } => cpu.set_cell(
-                dest,
-                cpu.value_at(&x) * cpu.value_at(&y),
-            )?,
-            Opcode::Input { x} => {
+            Opcode::Add { x, y, dest } => {
+                cpu.set_cell(dest, cpu.value_at(&x) + cpu.value_at(&y))?
+            }
+            Opcode::Mul { x, y, dest } => {
+                cpu.set_cell(dest, cpu.value_at(&x) * cpu.value_at(&y))?
+            }
+            Opcode::Input { x } => {
                 let value = cpu.input()?;
                 cpu.set_cell(x, value)?;
-            },
-            Opcode::Output {x} => {
+            }
+            Opcode::Output { x } => {
                 cpu.output(cpu.value_at(&x))?;
-            },
-            Opcode::JumpIfTrue {x, dest} => {
+            }
+            Opcode::JumpIfTrue { x, dest } => {
                 if cpu.value_at(&x) != 0 {
                     cpu.set_ip(dest)?;
                 }
-            },
-            Opcode::JumpIfFalse {x, dest} => {
+            }
+            Opcode::JumpIfFalse { x, dest } => {
                 if cpu.value_at(&x) == 0 {
                     cpu.set_ip(dest)?;
                 }
-            },
-            Opcode::LessThan {x, y, dest} => {
+            }
+            Opcode::LessThan { x, y, dest } => {
                 if cpu.value_at(&x) < cpu.value_at(&y) {
                     cpu.set_cell(dest, 1)?;
                 } else {
                     cpu.set_cell(dest, 0)?;
                 }
-            },
-            Opcode::Equal {x, y, dest} => {
+            }
+            Opcode::Equal { x, y, dest } => {
                 if cpu.value_at(&x) == cpu.value_at(&y) {
                     cpu.set_cell(dest, 1)?;
                 } else {
                     cpu.set_cell(dest, 0)?;
                 }
-            },
+            }
             Opcode::Halt => cpu.halt(),
+            Opcode::Noop => (),
         };
         Ok(())
     }
@@ -511,9 +512,9 @@ mod tests {
         let ins: Box<Vec<i32>> = Box::new(Vec::new());
         let outs: Box<Vec<i32>> = Box::new(Vec::new());
         let data = vec![
-            106, 0, 6,    // jump to 6 if 0 is true
-            104, 69, 99,  // trap! 69 is bad number
-            104, 420, 99  // print imm(420)
+            106, 0, 6, // jump to 6 if 0 is true
+            104, 69, 99, // trap! 69 is bad number
+            104, 420, 99, // print imm(420)
         ];
         let mut machine = IntcodeMachine::new(&data, ins, outs);
         machine.run().unwrap();
@@ -527,9 +528,9 @@ mod tests {
         let ins: Box<Vec<i32>> = Box::new(Vec::new());
         let outs: Box<Vec<i32>> = Box::new(Vec::new());
         let data = vec![
-            105, 0, 6,    // jump to 6 if 0 is true
-            104, 69, 99,  // trap! 69 is bad number
-            104, 420, 99  // print imm(420)
+            105, 0, 6, // jump to 6 if 0 is true
+            104, 69, 99, // trap! 69 is bad number
+            104, 420, 99, // print imm(420)
         ];
         let mut machine = IntcodeMachine::new(&data, ins, outs);
         machine.run().unwrap();
@@ -542,7 +543,7 @@ mod tests {
         for (i, expected) in vec![(7, 0), (8, 1), (9, 0)] {
             let ins: Box<Vec<i32>> = Box::new(vec![i]);
             let outs: Box<Vec<i32>> = Box::new(Vec::new());
-            let data = vec![3,9,8,9,10,9,4,9,99,-1,8];
+            let data = vec![3, 9, 8, 9, 10, 9, 4, 9, 99, -1, 8];
             let mut machine = IntcodeMachine::new(&data, ins, outs);
             machine.run().unwrap();
             let mut output = machine.take_output().unwrap();
@@ -555,7 +556,7 @@ mod tests {
         for (i, expected) in vec![(7, 0), (8, 1), (9, 0)] {
             let ins: Box<Vec<i32>> = Box::new(vec![i]);
             let outs: Box<Vec<i32>> = Box::new(Vec::new());
-            let data = vec![3,3,1108,-1,8,3,4,3,99];
+            let data = vec![3, 3, 1108, -1, 8, 3, 4, 3, 99];
             let mut machine = IntcodeMachine::new(&data, ins, outs);
             machine.run().unwrap();
             let mut output = machine.take_output().unwrap();
@@ -568,7 +569,7 @@ mod tests {
         for (i, expected) in vec![(7, 1), (8, 0), (9, 0)] {
             let ins: Box<Vec<i32>> = Box::new(vec![i]);
             let outs: Box<Vec<i32>> = Box::new(Vec::new());
-            let data = vec![3,9,7,9,10,9,4,9,99,-1,8];
+            let data = vec![3, 9, 7, 9, 10, 9, 4, 9, 99, -1, 8];
             let mut machine = IntcodeMachine::new(&data, ins, outs);
             machine.run().unwrap();
             let mut output = machine.take_output().unwrap();
@@ -581,7 +582,24 @@ mod tests {
         for (i, expected) in vec![(7, 1), (8, 0), (9, 0)] {
             let ins: Box<Vec<i32>> = Box::new(vec![i]);
             let outs: Box<Vec<i32>> = Box::new(Vec::new());
-            let data = vec![3,3,1107,-1,8,3,4,3,99];
+            let data = vec![3, 3, 1107, -1, 8, 3, 4, 3, 99];
+            let mut machine = IntcodeMachine::new(&data, ins, outs);
+            machine.run().unwrap();
+            let mut output = machine.take_output().unwrap();
+            assert_eq!(output.results(), Some(vec![expected]));
+        }
+    }
+
+    #[test]
+    fn test_large_program() {
+        for (i, expected) in vec![(7, 999), (8, 1000), (9, 1001)] {
+            let ins: Box<Vec<i32>> = Box::new(vec![i]);
+            let outs: Box<Vec<i32>> = Box::new(Vec::new());
+            let data = vec![
+                3, 21, 1008, 21, 8, 20, 1005, 20, 22, 107, 8, 21, 20, 1006, 20, 31, 1106, 0, 36,
+                98, 0, 0, 1002, 21, 125, 20, 4, 20, 1105, 1, 46, 104, 999, 1105, 1, 46, 1101, 1000,
+                1, 20, 4, 20, 1105, 1, 46, 98, 99,
+            ];
             let mut machine = IntcodeMachine::new(&data, ins, outs);
             machine.run().unwrap();
             let mut output = machine.take_output().unwrap();
