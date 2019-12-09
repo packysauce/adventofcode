@@ -117,11 +117,12 @@ impl<'a> IntcodeMachine {
         if *DEBUG {
             println!("self.data[{}] <- {} (was: {})", pos, val, self.data[pos]);
         }
-        if pos > self.data.len() {
-            return Err(MachineError::OutOfBounds(pos, self.data.len()).into());
+        if let Some(x) = self.data.get_mut(pos) {
+            *x = val;
+            Ok(())
+        } else {
+            Err(MachineError::OutOfBounds(pos, self.data.len()).into())
         }
-        self.data[pos] = val;
-        Ok(())
     }
 
     fn value_at(&self, pos: &Parameter) -> i32 {
@@ -183,7 +184,7 @@ impl<'a> IntcodeMachine {
         let opcode = op % 100;
         let flags = op / 100;
         if *DEBUG {
-            println!("opcode: {}, flags: {}", opcode, flags);
+            println!("ip: {}, opcode: {}, flags: {}", self.ip, opcode, flags);
         }
 
         let result = match opcode {
@@ -224,7 +225,7 @@ impl<'a> IntcodeMachine {
                 self.ip += 3;
                 Ok(Opcode::JumpIfTrue {
                     x: Parameter::of_kind_and_value(flags % 10, self.data[ip + 1])?,
-                    dest: self.data[ip + 2] as usize,
+                    dest: Parameter::of_kind_and_value(flags / 10, self.data[ip + 2])?,
                 })
             }
             6 => {
@@ -232,7 +233,7 @@ impl<'a> IntcodeMachine {
                 self.ip += 3;
                 Ok(Opcode::JumpIfFalse {
                     x: Parameter::of_kind_and_value(flags % 10, self.data[ip + 1])?,
-                    dest: self.data[ip + 2] as usize,
+                    dest: Parameter::of_kind_and_value(flags / 10, self.data[ip + 2])?,
                 })
             }
             7 => {
@@ -333,11 +334,11 @@ enum Opcode {
     },
     JumpIfTrue {
         x: Parameter,
-        dest: usize,
+        dest: Parameter,
     },
     JumpIfFalse {
         x: Parameter,
-        dest: usize,
+        dest: Parameter,
     },
     LessThan {
         x: Parameter,
@@ -388,12 +389,12 @@ impl Instruction for Opcode {
             }
             Opcode::JumpIfTrue { x, dest } => {
                 if cpu.value_at(&x) != 0 {
-                    cpu.set_ip(dest)?;
+                    cpu.set_ip(cpu.value_at(&dest) as usize)?;
                 }
             }
             Opcode::JumpIfFalse { x, dest } => {
                 if cpu.value_at(&x) == 0 {
-                    cpu.set_ip(dest)?;
+                    cpu.set_ip(cpu.value_at(&dest) as usize)?;
                 }
             }
             Opcode::LessThan { x, y, dest } => {
