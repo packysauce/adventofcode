@@ -2,6 +2,8 @@ use failure::{format_err, Fallible, ResultExt};
 use lazy_static::lazy_static;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::io::{self, BufRead, BufReader, Cursor, Write};
+use permutohedron::Heap;
+use std::collections::HashMap;
 
 lazy_static! {
     static ref DEBUG: bool = { std::env::var("DEBUG").is_ok() };
@@ -418,7 +420,7 @@ impl Instruction for Opcode {
     }
 }
 
-fn main() {
+fn main() -> Fallible<()> {
     let fname: String = std::env::args().skip(1).take(1).collect();
     let input_data = std::fs::read(fname)
         .map(Cursor::new)
@@ -437,15 +439,26 @@ fn main() {
         }
     }
 
-    let input = Box::new(io::stdin());
-    let output = Box::new(io::stdout());
-    let mut machine = IntcodeMachine::new(&data, input, output);
-    if let Err(e) = machine.run() {
-        eprintln!("{:?}", &e);
-        for i in e.iter_causes() {
-            eprintln!("{:?}", i);
+    let mut inputs: Vec<_> = (0..=4).collect();
+    let heap = Heap::new(&mut inputs);
+    //let mut prev_output = 0;
+    let results: HashMap<_, _> = heap.into_iter().flat_map(|phase_order: Vec<i32>| {
+        let mut prev_output = 0;
+        for phase in phase_order.iter() {
+            let mut cpu = IntcodeMachine::new(&data, Box::new(vec![prev_output, *phase]), Box::new(Vec::new()));
+            if cpu.run().is_err() { return None };
+            let results = cpu.take_output().unwrap().results().unwrap();
+            assert_eq!(results.len(), 1);
+            prev_output = *results.get(0).unwrap();
         }
-    }
+        Some((phase_order, prev_output))
+    }).collect();
+
+    let x = results.iter().max_by(|(_, out1), (_, out2)| {
+        out1.cmp(out2)
+    });
+    println!("{:?}", x);
+    Ok(())
 }
 
 #[cfg(test)]
