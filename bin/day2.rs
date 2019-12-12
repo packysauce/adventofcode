@@ -1,9 +1,7 @@
 use failure::{format_err, Fallible};
 use std::fmt::{Result as FmtResult, Formatter, Display};
-use std::fs::read;
 use std::io::{BufRead, BufReader, Cursor};
 use rayon::prelude::*;
-use std::sync::mpsc::channel;
 
 trait Instruction {
     fn execute(self, cpu: &mut IntcodeMachine);
@@ -44,14 +42,6 @@ impl<'a> IntcodeMachine {
 
     fn value_at(&self, pos: usize) -> i32 {
         self.data[pos]
-    }
-
-    fn as_ref(&'a self) -> &'a [i32] {
-        self.data.as_ref()
-    }
-
-    fn set_ip(&mut self, pos: usize) {
-        self.ip = pos
     }
 
     fn halt(&mut self) {
