@@ -1,9 +1,10 @@
-use failure::{format_err, Fallible, ResultExt};
+use failure::Fallible;
 use lazy_static::lazy_static;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::io::{self, BufRead, BufReader, Cursor, Write};
 use permutohedron::Heap;
 use std::collections::HashMap;
+use crossbeam::channel::{Sender, Receiver, bounded};
 
 lazy_static! {
     static ref DEBUG: bool = { std::env::var("DEBUG").is_ok() };
@@ -11,7 +12,7 @@ lazy_static! {
 
 trait Output {
     fn output(&mut self, what: i32) -> Fallible<()>;
-    fn results(&mut self) -> Option<Vec<i32>>;
+    fn results(&self) -> Option<Vec<i32>>;
 }
 
 trait Input {
@@ -38,7 +39,7 @@ impl Output for Vec<i32> {
         Ok(self.push(what))
     }
 
-    fn results(&mut self) -> Option<Vec<i32>> {
+    fn results(&self) -> Option<Vec<i32>> {
         Some(self.clone())
     }
 }
@@ -69,8 +70,23 @@ impl Output for io::Stdout {
         Ok(writeln!(self, "{}", what)?)
     }
 
-    fn results(&mut self) -> Option<Vec<i32>> {
+    fn results(&self) -> Option<Vec<i32>> {
         None
+    }
+}
+
+impl Output for Sender<i32> {
+    fn results(&self) -> Option<Vec<i32>> {
+        None
+    }
+    fn output(&mut self, what: i32) -> Fallible<()> {
+        self.send(what).map_err(Into::into)
+    }
+}
+
+impl Input for Receiver<i32> {
+    fn input(&mut self) -> Fallible<i32> {
+        self.recv().map_err(Into::into)
     }
 }
 
@@ -80,8 +96,6 @@ enum MachineError {
     OutOfBounds(usize, usize),
     InvalidOpcode(i32),
     EOF,
-    InvalidIndirect,
-    InvalidImmediate,
 }
 
 impl Display for MachineError {
@@ -153,10 +167,6 @@ impl<'a> IntcodeMachine {
             output.output(what)?
         }
         Ok(())
-    }
-
-    fn as_ref(&'a self) -> &'a [i32] {
-        self.data.as_ref()
     }
 
     fn set_ip(&mut self, pos: usize) -> Fallible<()> {
@@ -284,25 +294,11 @@ enum Parameter {
 }
 
 impl Parameter {
-    fn as_address(&self) -> Fallible<usize> {
-        match *self {
-            Parameter::Indirect(x) => Ok(x),
-            _ => Err(format_err!("as_address called on immediate value")),
-        }
-    }
-
     fn of_kind_and_value(kind: i32, value: i32) -> Fallible<Parameter> {
         match kind {
             0 => Ok(Parameter::Indirect(value as usize)),
             1 => Ok(Parameter::Immediate(value)),
             _ => Err(MachineError::InvalidOpcode(kind).into()),
-        }
-    }
-
-    fn from_cpu(&self, cpu: &IntcodeMachine) -> i32 {
-        match *self {
-            Parameter::Immediate(x) => x,
-            _ => cpu.value_at(&self),
         }
     }
 }
@@ -353,7 +349,6 @@ enum Opcode {
         dest: usize,
     },
     Halt,
-    Noop,
 }
 
 impl Display for Opcode {
@@ -368,7 +363,6 @@ impl Display for Opcode {
             Opcode::LessThan { x, y, dest } => write!(w, "lessthan {} < {} => {}", x, y, dest),
             Opcode::Equal { x, y, dest } => write!(w, "equal {} == {} => {}", x, y, dest),
             Opcode::Halt => write!(w, "halt"),
-            Opcode::Noop => write!(w, "noop"),
         }
     }
 }
@@ -414,7 +408,6 @@ impl Instruction for Opcode {
                 }
             }
             Opcode::Halt => cpu.halt(),
-            Opcode::Noop => (),
         };
         Ok(())
     }
@@ -517,7 +510,7 @@ mod tests {
         let mut machine = IntcodeMachine::new(&data, ins, outs);
         machine.run().unwrap();
         println!("{:?}", &machine.data.clone());
-        let mut output = machine.take_output().unwrap();
+        let output = machine.take_output().unwrap();
         assert_eq!(output.results(), Some(vec![99]));
     }
 
@@ -533,7 +526,7 @@ mod tests {
         let mut machine = IntcodeMachine::new(&data, ins, outs);
         machine.run().unwrap();
         println!("{:?}", &machine.data.clone());
-        let mut output = machine.take_output().unwrap();
+        let output = machine.take_output().unwrap();
         assert_eq!(output.results(), Some(vec![420]));
     }
 
@@ -548,7 +541,7 @@ mod tests {
         ];
         let mut machine = IntcodeMachine::new(&data, ins, outs);
         machine.run().unwrap();
-        let mut output = machine.take_output().unwrap();
+        let output = machine.take_output().unwrap();
         assert_eq!(output.results(), Some(vec![69]));
     }
 
@@ -560,7 +553,7 @@ mod tests {
             let data = vec![3, 9, 8, 9, 10, 9, 4, 9, 99, -1, 8];
             let mut machine = IntcodeMachine::new(&data, ins, outs);
             machine.run().unwrap();
-            let mut output = machine.take_output().unwrap();
+            let output = machine.take_output().unwrap();
             assert_eq!(output.results(), Some(vec![expected]));
         }
     }
@@ -573,7 +566,7 @@ mod tests {
             let data = vec![3, 3, 1108, -1, 8, 3, 4, 3, 99];
             let mut machine = IntcodeMachine::new(&data, ins, outs);
             machine.run().unwrap();
-            let mut output = machine.take_output().unwrap();
+            let output = machine.take_output().unwrap();
             assert_eq!(output.results(), Some(vec![expected]));
         }
     }
@@ -586,7 +579,7 @@ mod tests {
             let data = vec![3, 9, 7, 9, 10, 9, 4, 9, 99, -1, 8];
             let mut machine = IntcodeMachine::new(&data, ins, outs);
             machine.run().unwrap();
-            let mut output = machine.take_output().unwrap();
+            let output = machine.take_output().unwrap();
             assert_eq!(output.results(), Some(vec![expected]));
         }
     }
@@ -599,7 +592,7 @@ mod tests {
             let data = vec![3, 3, 1107, -1, 8, 3, 4, 3, 99];
             let mut machine = IntcodeMachine::new(&data, ins, outs);
             machine.run().unwrap();
-            let mut output = machine.take_output().unwrap();
+            let output = machine.take_output().unwrap();
             assert_eq!(output.results(), Some(vec![expected]));
         }
     }
@@ -616,7 +609,7 @@ mod tests {
             ];
             let mut machine = IntcodeMachine::new(&data, ins, outs);
             machine.run().unwrap();
-            let mut output = machine.take_output().unwrap();
+            let output = machine.take_output().unwrap();
             assert_eq!(output.results(), Some(vec![expected]));
         }
     }
